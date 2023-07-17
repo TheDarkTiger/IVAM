@@ -11,6 +11,16 @@
 import os
 import json
 
+def error( string="!?" ):
+	print( f"[ERR!] {string}" )
+
+def warning( string="!?" ):
+	print( f"[Warn ] {string}" )
+
+def info( string="!?" ):
+	print( f"[info] {string}" )
+
+
 def create_dir_if_nonexistant( folderPath ):
 	if not os.path.exists( folderPath ) :
 		os.mkdir( folderPath )
@@ -18,18 +28,34 @@ def create_dir_if_nonexistant( folderPath ):
 
 class project:
 	
+	project = {"name":"uninitialized"}
 	projectPath = None
 	pathOfSourceVideo = None
-	ffmpegGeneralOptions = "-hide_banner -loglevel error"
 	
 	# init the project
 	def __init__( self, projectPath=None ):
 		if projectPath == None :
-			print( "[Err ] No path for project" )
+			error( "No path for project" )
 		else:
-			self.projectPath = projectPath
-			create_dir_if_nonexistant( self.projectPath )
-			create_dir_if_nonexistant( self.projectPath+"\\frames" )
+			if os.path.exists( projectPath ):
+				info( "loading project..." )
+				self.load( projectPath )
+			else:
+				# Initialize a new project
+				info( "creating new project..." )
+				self.projectPath = projectPath
+				create_dir_if_nonexistant( self.projectPath )
+				create_dir_if_nonexistant( self.projectPath+"\\frames" )
+				create_dir_if_nonexistant( self.projectPath+"\\pages" )
+				
+				self.project = {"name":"", "exportFrames":True, "exportPages":False, "pathOfSourceVideo":""}
+				self.project["frame"] = {"width":160, "height":120, "stretch":False}
+				self.project["page"] = {"frameNumber":24, "framesPerLines":6}
+				self.project["video"] = {"width":640, "height":480, "fps":24, "codec":{"final":"VP9", "draft":"VP8"}}
+				self.project["ffmpeg"] = {"generalOptions":"-hide_banner -loglevel error"}
+				
+				with open( self.projectPath+"\\project.json", "w" ) as writeFile :
+					json.dump( self.project, writeFile, indent=2, separators=(",", ": ") )
 	
 	
 	# Return the string of this project
@@ -46,73 +72,124 @@ class project:
 		else :
 			stringToReturn += f"\nSource video path:{self.pathOfSourceVideo}"
 		
+		stringToReturn += str( self.project )
+		
 		return stringToReturn
+	
+	# Load a project
+	def load( self, projectPath=None ):
+		if os.path.exists( projectPath ):
+			self.projectPath = projectPath
+			
+			with open( f"{projectPath}\\project.json", "r" ) as readFile :
+				data = json.load(readFile)
+			
+			smells = 0
+			if "name" not in data : smells+=2
+			if "frame" not in data : smells+=1
+			if "page" not in data : smells+=1
+			if "video" not in data : smells+=2
+			if "ffmpeg" not in data : smells+=1
+			
+			info( f"{smells} smells while opening the project" )
+			if smells > 3 :
+				error( "Too many smells while trying to load the project, please, check the files" )
+			else:
+				info( "Ok, loading" )
+				self.project = data.copy()
+			
+	
+	# Save project
+	def save( self ):
+		with open( self.projectPath+"\\project.json", "w" ) as writeFile :
+			json.dump( self.project, writeFile, indent=2, separators=(",", ": ") )
 	
 	# Set source video
 	def set_source_video_path( self, pathOfSourceVideo=None ):
-		self.pathOfSourceVideo = pathOfSourceVideo
+		if not os.path.exists( pathOfSourceVideo ):
+			error( f"Video not found '{pathOfSourceVideo}'" )
+		else:
+			self.project["pathOfSourceVideo"] = pathOfSourceVideo
+			
+			input = self.project["pathOfSourceVideo"]
+			output = f"{self.projectPath}\\config.json"
+			options = self.project["ffmpeg"]["generalOptions"]
+			commandLine = f'ffprobe {options} -v quiet -print_format json -show_format -show_streams "{input}">"{output}"'
+			os.system( commandLine )
+			
+			with open( output, "r" ) as readFile :
+				data = json.load(readFile)
+			
+			self.project["video"]["fps"] = data["streams"][0]["r_frame_rate"]
+			
+	
+	# Set the fps for extraction/reconstruction
+	def set_fps( self, fps=None ):
+		if fps == None :
+			error( "No fps given" )
+		else:
+			self.project["video"]["fps"] = fps
 	
 	# Extract frames from video
 	def extract_frames_from_video( self ):
 		print( f"{self.projectPath} : Vid 2 Images" )
 		ressourcesOk = True
+		input = self.project["pathOfSourceVideo"]
 		
-		if self.pathOfSourceVideo == None :
-			print( "[Err ] No video source set" )
+		
+		if input == None :
+			error( "No video source set" )
 			ressourcesOk = False
 		
 		if os.path.exists( f"{self.projectPath}\\frames\\frame0001.png" ):
-			print( "[Err ] Frame(s) already exists. Please delete yourself first." )
+			error( "Frame(s) already exists. Please delete yourself first." )
 			ressourcesOk = False
 		
 		if ressourcesOk:
-			input = self.pathOfSourceVideo
+			ffmpegGeneralOptions = self.project["ffmpeg"]["generalOptions"]
+			fps = self.project["video"]["fps"]
 			
-			output = f"{self.projectPath}\\config.json"
-			commandLine = f'ffprobe {self.ffmpegGeneralOptions} -v quiet -print_format json -show_format -show_streams "{input}">"{output}"'
-			os.system( commandLine )
+			w = self.project["frame"]["width"]
+			h = self.project["frame"]["height"]
+			if self.project["frame"]["stretch"] :
+				videoFilter = f"scale={w}:{h}"
+			else:
+				videoFilter = f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:-1:-1:color=black"
 			
 			output = f"{self.projectPath}\\frames\\frame%04d.png"
-			commandLine = f'ffmpeg -i "{input}" -r 30 -f image2 -vf "scale=-2:120" "{output}"'
-			commandLine = f'ffmpeg {self.ffmpegGeneralOptions} -i "{input}" -f image2 -vf "scale=160:120:force_original_aspect_ratio=decrease,pad=160:120:-1:-1:color=black" "{output}"'
+			commandLine = f'ffmpeg {ffmpegGeneralOptions} -i "{input}" -r {fps} -f image2 -vf "{videoFilter}" "{output}"'
 			os.system( commandLine )
 			
 			output = f"{self.projectPath}\\audio.ogg"
-			commandLine = f'ffmpeg -y {self.ffmpegGeneralOptions} -i "{input}" -vn -c:a libopus "{output}"'
+			commandLine = f'ffmpeg -y {ffmpegGeneralOptions} -i "{input}" -vn -c:a libopus "{output}"'
 			os.system( commandLine )
 			
 	
 	
 	def generate_video_from_frames( self, pathOfSourceVideo=None ):
-		print( f"{self.projectPath} : Images 2 Vid" )
+		info( f"{self.projectPath} : Images 2 Vid" )
 		ressourcesOk = True
 		
 		images = f"{self.projectPath}\\frames\\frame%04d.png"
 		if not os.path.exists( f"{self.projectPath}\\frames\\frame0001.png" ):
-			print( f"[Err ] No frame found! How can I make a video?" )
+			error( f"No frame found! How can I make a video?" )
 			ressourcesOk = False
 		
 		audio = f"{self.projectPath}\\audio.ogg"
 		if not os.path.exists( audio ):
-			print( f"[Err ] Audio file '{audio}' not found. Please give one." )
+			error( f"Audio file '{audio}' not found. Please give one." )
 			ressourcesOk = False
 		
-		framerate = 24
 		data = None
 		jsonFilePath = f"{self.projectPath}\\config.json"
 		if not os.path.exists( jsonFilePath ) :
-			print( f"[Err ] '{jsonFilePath}' file not found. Make a project first!" )
+			error( f"'{jsonFilePath}' file not found. Make a project first!" )
 			ressourcesOk = False
 		
 		
 		if ressourcesOk :
 			with open( jsonFilePath, "r" ) as readFile :
 				data = json.load(readFile)
-			
-			
-			framerate = data["streams"][0]["r_frame_rate"]
-			
-			videoOptions = '-vf "scale=-2:480" -sws_flags neighbor'
 			
 			# Codec selection
 			codec = "webm"
@@ -121,31 +198,38 @@ class project:
 			if codec == "webm" :
 				output = f"{self.projectPath}\\generated.webm"
 				if encoding == "fast" :
-					print( "[info] codec VP8" )
+					info( "codec VP8" )
 					videoCodec = '-c:v libvpx'
 				else:
-					print( "[info] codec VP9" )
+					info( "codec VP9" )
 					videoCodec = '-c:v libvpx-vp9'
 				audioCodec = '-c:a libopus'
 			elif codec == "mp4":
 				output = f"{self.projectPath}\\generated.mp4"
 				if encoding == "fast" :
-					print( "[info] codec x264" )
+					info( "codec x264" )
 					videoCodec = '-c:v libx264'
 				else:
-					print( "[info] codec x265" )
+					info( "codec x265" )
 					videoCodec = '-c:v libx265'
 				audioCodec = '-c:a aac'
 			else :
-				print( "[Err ] codec unknown" )
+				error( "codec unknown" )
 				codec = None
 			
 			# Video encoding
 			if codec != None :
 				if os.path.exists( output ) :
-					print( f"[Err ] '{output}' file already exists. Please delete yourself." )
+					error( f"'{output}' file already exists. Please delete yourself." )
 				else :
-					commandLine = f'ffmpeg {self.ffmpegGeneralOptions} -framerate {framerate} -i "{images}" -i "{audio}" {videoCodec} {videoOptions} {audioCodec} "{output}"'
+					ffmpegGeneralOptions = self.project["ffmpeg"]["generalOptions"]
+					fps = self.project["video"]["fps"]
+					
+					w = self.project["video"]["width"]
+					h = self.project["video"]["height"]
+					videoOptions = f'-vf "scale={w}:{h},setsar=1:1" -sws_flags neighbor'
+					
+					commandLine = f'ffmpeg {ffmpegGeneralOptions} -framerate {fps} -i "{images}" -i "{audio}" {videoCodec} {videoOptions} {audioCodec} "{output}"'
 					os.system( commandLine )
 			
 		
@@ -154,9 +238,14 @@ class project:
 # Lib test
 if __name__ == "__main__" :
 	
-	p2 = project( "tmptptpmmtp" )
-	p2.set_source_video_path( "aCAT47.webm" )
-	print( p2 )
-	# p2.extract_frames_from_video()
-	# p2.generate_video_from_frames()
+	p = project( "tmptptpmmtp" )
+	print( p )
+	p.set_source_video_path( "aCAT47.webm" )
+	print( p )
+	p.set_fps( 6 )
+	print( p )
+	p.save()
+	print( p )
+	p.extract_frames_from_video()
+	p.generate_video_from_frames()
 

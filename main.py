@@ -26,6 +26,10 @@ project = IVAM.project( "WIP" )
 # Set the source video here
 project.set_source_video_path( "video.webm" )
 
+# Force the fps to 12
+# will affect frame generation and thus video generation
+project.set_fps( 12 )
+
 # Summary
 print( project )
 
